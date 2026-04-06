@@ -13,7 +13,8 @@ import { homedir, platform } from 'os';
 
 const PORT = process.env.BRIDGE_PORT || 7600;
 const CWS_URL = 'https://chromewebstore.google.com/detail/crossmem/kmpfhoimimgfdglaglpjegjiahkfolpa';
-let extensionWs = null;
+const PROD_EXT_ID = 'kmpfhoimimgfdglaglpjegjiahkfolpa';
+const extensions = new Map(); // extensionId → ws
 const pending = new Map();
 
 // HTTP server for CLI commands
@@ -30,8 +31,11 @@ const httpServer = createServer((req, res) => {
 
   if (req.method === 'GET' && req.url === '/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
+    const connected = {};
+    for (const [id, ws] of extensions) connected[id] = ws.readyState === WebSocket.OPEN;
     res.end(JSON.stringify({
-      connected: extensionWs?.readyState === WebSocket.OPEN,
+      connected: extensions.size > 0,
+      extensions: connected,
       pending: pending.size,
     }));
     return;
@@ -45,14 +49,23 @@ const httpServer = createServer((req, res) => {
         const cmd = JSON.parse(body);
         if (!cmd.id) cmd.id = randomUUID();
 
-        if (!extensionWs || extensionWs.readyState !== WebSocket.OPEN) {
+        let targetExt;
+        if (cmd.extensionId) {
+          targetExt = extensions.get(cmd.extensionId);
+        } else if (extensions.has(PROD_EXT_ID) && extensions.get(PROD_EXT_ID).readyState === WebSocket.OPEN) {
+          targetExt = extensions.get(PROD_EXT_ID);
+        } else {
+          targetExt = [...extensions.values()].find(ws => ws.readyState === WebSocket.OPEN);
+        }
+
+        if (!targetExt || targetExt.readyState !== WebSocket.OPEN) {
           res.writeHead(503, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: false, error: 'Extension not connected. Is Chrome running with crossmem installed?' }));
+          res.end(JSON.stringify({ success: false, error: 'Extension not connected. Is Chrome running with crossmem installed?', available: [...extensions.keys()] }));
           return;
         }
 
         const timeout = cmd.timeout || 30000;
-        const result = await sendToExtension(cmd, timeout);
+        const result = await sendToExtension(cmd, targetExt, timeout);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (err) {
@@ -71,12 +84,18 @@ const httpServer = createServer((req, res) => {
 const wss = new WebSocketServer({ server: httpServer });
 
 wss.on('connection', (ws) => {
-  console.log('[bridge] ✅ extension connected');
-  extensionWs = ws;
+  let extId = null;
 
   ws.on('message', (data) => {
     try {
       const msg = JSON.parse(data);
+
+      if (msg.type === 'register') {
+        extId = msg.extensionId || `ext-${Date.now()}`;
+        extensions.set(extId, ws);
+        console.log(`[bridge] ✅ extension registered: ${extId} (total: ${extensions.size})`);
+        return;
+      }
 
       if (msg.type === 'llm') {
         handleLlmRequest(msg, ws);
@@ -85,6 +104,15 @@ wss.on('connection', (ws) => {
 
       if (msg.type === 'save_memory') {
         handleSaveMemory(msg, ws);
+        return;
+      }
+
+      if (msg.type === 'open_wiki') {
+        const filePath = msg.path.replace(/^~/, homedir());
+        const obsResult = spawn('open', ['-a', 'Obsidian', filePath], { stdio: 'ignore' });
+        obsResult.on('error', () => {
+          if (existsSync(filePath)) spawn('open', ['-R', filePath]);
+        });
         return;
       }
 
@@ -115,24 +143,21 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    console.log('[bridge] extension disconnected');
-    if (extensionWs === ws) extensionWs = null;
-    for (const [id, p] of pending) {
-      clearTimeout(p.timer);
-      p.resolve({ id, success: false, error: 'Extension disconnected' });
+    if (extId) {
+      extensions.delete(extId);
+      console.log(`[bridge] extension disconnected: ${extId} (remaining: ${extensions.size})`);
     }
-    pending.clear();
   });
 });
 
-function sendToExtension(cmd, timeout) {
+function sendToExtension(cmd, targetWs, timeout) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       pending.delete(cmd.id);
       resolve({ id: cmd.id, success: false, error: `Timeout after ${timeout}ms` });
     }, timeout);
     pending.set(cmd.id, { resolve, timer });
-    extensionWs.send(JSON.stringify(cmd));
+    targetWs.send(JSON.stringify(cmd));
   });
 }
 
@@ -228,7 +253,7 @@ async function handleSaveMemory(msg, ws) {
 // Auto-open CWS if extension doesn't connect within 10s
 let cwsOpened = false;
 setTimeout(() => {
-  if (!extensionWs && !cwsOpened) {
+  if (extensions.size === 0 && !cwsOpened) {
     cwsOpened = true;
     console.log('[bridge] Extension not detected. Install it:');
     console.log(`[bridge] → ${CWS_URL}`);

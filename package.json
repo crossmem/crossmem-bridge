@@ -1,6 +1,6 @@
 {
   "name": "crossmem-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "WebSocket bridge between CLI and crossmem Chrome extension. Enables AI agents to control your browser.",
   "type": "module",
   "bin": {
