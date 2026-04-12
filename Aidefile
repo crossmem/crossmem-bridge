@@ -1,0 +1,25 @@
+[persona]
+name = "crossmem-bridge"
+style = "Node.js WebSocket bridge library. Protocol changes require updating both sides. Keep bin/ and README in sync with lib exports."
+
+[budget]
+tokens = "200k"
+max_retries = 3
+timeout = "15m"
+
+[memory]
+compact_after = "200k"
+
+[workspace]
+read = ["~/claude_projects/crossmem-chrome"]
+
+[trigger]
+on = "issue"
+
+[output]
+max_summary_tokens = 500
+narrative_schema = """
+NOTES: <one-line what you changed and why>
+PR: <url or none>
+NEXT: <optional redirect for coordinator>
+"""
