@@ -199,8 +199,8 @@ async function handleSaveMemory(msg, ws) {
   const { slug, date, screenshot, markdown, arxivId } = data;
 
   try {
-    const rawDir = join(CROSSMEM_DIR, 'raw');
-    const wikiDir = join(CROSSMEM_DIR, 'wiki');
+    const rawDir = data.rawPath ? data.rawPath.replace(/^~/, homedir()) : join(CROSSMEM_DIR, 'raw');
+    const wikiDir = data.wikiPath ? data.wikiPath.replace(/^~/, homedir()) : join(CROSSMEM_DIR, 'wiki');
     await mkdir(rawDir, { recursive: true });
     await mkdir(wikiDir, { recursive: true });
 
